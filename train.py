@@ -2,14 +2,11 @@ from MyClassifier import myNNmodule
 import argparse
 import json
 from os import path
-from collections import OrderedDict
 import torch
 from torch import nn
 from torch import optim
-import torch.nn.functional as F
 
-from PIL import Image
-import numpy as np
+
 from torchvision import datasets, transforms, models
 
 
@@ -64,10 +61,6 @@ def get_cat_to_name(json_file):
     with open(json_file, 'r') as f:
         cat_to_name = json.load(f)
     return cat_to_name
-
-
-def test_loop():
-    pass
 
 
 def load_pretrained_NN(arch):
@@ -180,23 +173,17 @@ def get_arch_input_size(arch):
     return input_size
 
 
-def save_checkpoint(save_dir, model_classifier, arch, epochs, hidden_units):
-    checkpoint = {'input_size': get_arch_input_size(arch),
-                  'output_size': 102,
-                  'layers': [
-                      (each.in_features, each.out_features)
-                      for each in model_classifier
-                      if isinstance(each, nn.Linear)],
-                  'state_dict': model_classifier.state_dict(),
-                  'class_to_idx': train_datasets.class_to_idx}
+def save_checkpoint(save_dir, classifier_checkpoint,
+                    arch, epochs, hidden_units):
+    classifier_checkpoint['input_size'] = get_arch_input_size(arch)
+    classifier_checkpoint['output_size'] = 102
+    classifier_checkpoint['arch'] = arch
+    classifier_checkpoint['class_to_idx'] = train_datasets.class_to_idx
     save_path = str.format(
         "{0}\\{1}_{2}_{3}.pth",
         path.abspath(save_dir), arch, hidden_units, epochs)
     print(save_path)
-    torch.save(checkpoint, save_path)
-    print(checkpoint['layers'])
-    print(checkpoint['layers'][0][0])
-    print(checkpoint['layers'][0][1])
+    torch.save(classifier_checkpoint, save_path)
 
 
 if __name__ == '__main__':
@@ -225,16 +212,8 @@ if __name__ == '__main__':
     # Load model
     model, model_out_features = load_pretrained_NN(dict_args['arch'])
     hidden_units = dict_args['hidden_units']
-    classifier = nn.Sequential(OrderedDict([
-        ('fc1', nn.Linear(model_out_features, hidden_units)),
-        ('relu', nn.ReLU()),
-        ('fc2', nn.Linear(hidden_units, 102)),
-        ('output', nn.LogSoftmax(dim=1))
-    ]))
     myModule = myNNmodule()
-    myModule.classifier = myModule.create_Classifier_Type1(
-        model_out_features, hidden_units)
-    # myModule.classifier = classifier
+    myModule.apply_classifier_type1(model_out_features, hidden_units)
     assign_classifier_to_model(myModule.classifier, model, dict_args['arch'])
     # train the classifier
     model_classifier = get_model_classifier(model, dict_args['arch'])
@@ -243,6 +222,8 @@ if __name__ == '__main__':
         dict_args['epochs'], dict_args['learning_rate'],
         train_dataloader, valid_dataloader)
     # save the model
-    # save_checkpoint(dict_args['save_dir'], model_classifier, dict_args['arch'],
-    #                 dict_args['epochs'], dict_args['hidden_units'])
+    classifier_checkpoint = myModule.save_checkpoint_type1()
+    save_checkpoint(dict_args['save_dir'], classifier_checkpoint,
+                    dict_args['arch'], dict_args['epochs'],
+                    dict_args['hidden_units'])
     print("Hello World!")
