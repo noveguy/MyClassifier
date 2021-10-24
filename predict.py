@@ -18,6 +18,9 @@ def load_pretrained_NN(arch):
     elif arch == 'resnet18':
         model = models.resnet18(pretrained=True)
         model_out_features = 512
+    else:
+        print("Unsupported pretrained {}".format(arch))
+        exit()
     # Freeze parameters so we don't backprop through them
     for param in model.parameters():
         param.requires_grad = False
@@ -28,19 +31,26 @@ def assign_classifier_to_model(classifier, model, arch):
     print('assign_classifier_to_model() ==> {0}'.format(arch))
     if arch == 'vgg16' or arch == 'vgg13':
         model.classifier = classifier
+        return True
     elif arch == 'resnet18':
         model.fc = classifier
+        return True
     else:
-        print('Unsupported arch')
+        print('Unsupported pretrained {}'.format(arch))
+        exit()
 
 
 def load_checkpoint(checkpoint_path):
-    checkpoint = torch.load(checkpoint_path)
-    model, model_out_features = load_pretrained_NN(checkpoint['arch'])
-    myNN = myNNmodule()
-    myNN.load_checkpoint_type1(checkpoint)
-    assign_classifier_to_model(myNN.classifier, model, checkpoint['arch'])
-    return model, myNN
+    try:
+        checkpoint = torch.load(checkpoint_path)
+        model, model_out_features = load_pretrained_NN(checkpoint['arch'])
+        myNN = myNNmodule()
+        myNN.load_checkpoint_type1(checkpoint)
+        assign_classifier_to_model(myNN.classifier, model, checkpoint['arch'])
+        return model, myNN
+    except Exception as e:
+        print(e)
+        exit()
 
 
 def resizeKeepingAspect(PILimage, shortest_side):
@@ -108,18 +118,20 @@ def reverseKeyValuePair(dictToReverse):
     return reversed_dict
 
 
-def predict(image_path, model, topk=5):
-    ''' Predict the class (or classes) of an image using a trained deep learning model.
+def predict(image, model, device, topk=5):
+    ''' Predict the class (or classes) of an image
+        using a trained deep learning model.
     '''
 
     # TODO: Implement the code to predict the class from an image file
-    image = Image.open(image_path)
     tensor_image = process_image(image)
     tensor_image = tensor_image.unsqueeze(0)
+    dev_tensor_image = tensor_image.to(device)
 
+    model.to(device)
     model.eval()
     with torch.no_grad():
-        output = model.forward(tensor_image)
+        output = model.forward(dev_tensor_image)
         ps = torch.exp(output)
 
         top_p, top_class = ps.topk(topk, dim=1)
@@ -127,31 +139,73 @@ def predict(image_path, model, topk=5):
     return top_p, top_class
 
 
+def print_category_probs(lst_cat, lst_probs):
+    print_lst = list(zip(lst_cat, lst_probs))
+    print("\n[Item] - [Score]")
+    for item in print_lst:
+        print("{} - {:.2f}%".format(item[0], item[1] * 100))
+
+
 def main(dict_args):
     checkpoint_path = dict_args['checkpoint']
     image_path = dict_args['image_path']
     top_k = dict_args['top_k']
     loaded_model, myNN = load_checkpoint(checkpoint_path)
+    if loaded_model is None:
+        print('No model loaded')
+        exit()
+
     device_cuda0 = torch.device(
         'cuda:0' if torch.cuda.is_available() else 'cpu')
-    # if dict_args['gpu'] is True:
-    #     loaded_model.to(device_cuda0)
-    probs, indices = predict(image_path, loaded_model, top_k)
-    # print(probs)
-    # print(indices)
+    device_cpu = torch.device('cpu')
+    chosen_device = device_cpu
+    if dict_args['gpu'] is True:
+        print("Running on GPU")
+        chosen_device = device_cuda0
+    else:
+        print("Running on CPU")
+
+    try:
+        image = Image.open(image_path)
+    except Exception as e:
+        print(e)
+        exit()
+
+    probs, indices = predict(image, loaded_model, chosen_device, top_k)
 
     idx_to_class = reverseKeyValuePair(myNN.class_to_idx)
-    probs = probs.squeeze().numpy()
-    indices = indices.squeeze().numpy()
+    probs = probs.to(device_cpu).squeeze().numpy()
+    indices = indices.to(device_cpu).squeeze().numpy()
 
-    with open(dict_args['category_names'], 'r') as f:
-        cat_to_name = json.load(f)
+    flowers = []
+    flowers_ps = []
+    if dict_args['category_names'] is not None:
+        cat_to_name = {}
+        try:
+            with open(dict_args['category_names'], 'r') as f:
+                cat_to_name = json.load(f)
+            if len(cat_to_name) > 0:
+                if top_k > 1:
+                    flowers = [cat_to_name[idx_to_class[idx]]
+                               for idx in indices.tolist()]
+                    flowers_ps = probs.tolist()
+                else:
+                    flowers.append(cat_to_name[idx_to_class[indices.item(0)]])
+                    flowers_ps = [probs.item(0)]
+                print_category_probs(flowers, flowers_ps)
+                return
+        except Exception as e:
+            print(e)
 
     if top_k > 1:
-        flowers = [cat_to_name[idx_to_class[idx]] for idx in indices.tolist()]
+        flowers = [idx_to_class[idx]
+                   for idx in indices.tolist()]
+        flowers_ps = probs.tolist()
     else:
-        flowers = cat_to_name[idx_to_class[indices.item(0)]]
-    print(flowers)
+        flowers.append(idx_to_class[indices.item(0)])
+        flowers_ps = [probs.item(0)]
+
+    print_category_probs(flowers, flowers_ps)
 
 
 if __name__ == '__main__':
