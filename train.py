@@ -1,6 +1,7 @@
 from MyClassifier import myNNmodule
 import argparse
 import json
+import time
 from os import path
 import torch
 from torch import nn
@@ -74,6 +75,8 @@ def load_pretrained_NN(arch):
     elif arch == 'resnet18':
         model = models.resnet18(pretrained=True)
         model_out_features = 512
+    else:
+        return None, model_out_features
     # Freeze parameters so we don't backprop through them
     for param in model.parameters():
         param.requires_grad = False
@@ -84,10 +87,13 @@ def assign_classifier_to_model(classifier, model, arch):
     print('assign_classifier_to_model() ==> {0}'.format(arch))
     if arch == 'vgg16' or arch == 'vgg13':
         model.classifier = classifier
+        return True
     elif arch == 'resnet18':
         model.fc = classifier
+        return True
     else:
         print('Unsupported arch')
+        return False
 
 
 def get_model_classifier(model, arch):
@@ -101,8 +107,9 @@ def get_model_classifier(model, arch):
         return None
 
 
-def train_classifier(model, model_classifier,
-                     epochs, leanrate, dataloader, validloader):
+def train_classifier_gpu(model, model_classifier,
+                         epochs, leanrate, dataloader, validloader):
+    print("Training classifier with GPU")
     device_cuda0 = torch.device(
         'cuda:0' if torch.cuda.is_available() else 'cpu')
     device_cpu = torch.device('cpu')
@@ -117,6 +124,7 @@ def train_classifier(model, model_classifier,
     # training loop
     print("Enter training loop")
     for e in range(epochs):
+        start_epoch = time.time()
         running_loss = 0
         for images, labels in dataloader:
             optimizer.zero_grad()
@@ -156,8 +164,62 @@ def train_classifier(model, model_classifier,
         print("Epoch: {}/{}.. ".format(e + 1, epochs),
               "Train Loss: {:.6f}.. ".format(train_loss),
               "Valid Loss: {:.6f}.. ".format(valid_loss),
-              "Valid Accuracy: {:.6f}".format(
-            val_correct / len(validloader.dataset))
+              "Valid Accuracy: {:.6f}..".format(
+            val_correct / len(validloader.dataset)),
+            "Duration: {:.1f}s ".format(time.time() - start_epoch)
+        )
+    print("Done training")
+
+
+def train_classifier_cpu(model, model_classifier,
+                         epochs, leanrate, dataloader, validloader):
+    print("Training classifier with CPU")
+    # training backpropagation
+    criterion = nn.NLLLoss()
+    optimizer = optim.Adam(model_classifier.parameters(), lr=leanrate)
+    # turn on gradient for classifier
+    for params in model_classifier.parameters():
+        params.requires_grad = True
+    # training loop
+    print("Enter training loop")
+    for e in range(epochs):
+        start_epoch = time.time()
+        running_loss = 0
+        for images, labels in dataloader:
+            optimizer.zero_grad()
+
+            outputs = model.forward(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        else:
+            total_val_loss = 0
+            val_correct = 0
+            # turn off gradients for validation
+            with torch.no_grad():
+                for images, labels in validloader:
+                    # pass images through network
+                    val_outputs = model.forward(images)
+                    val_loss = criterion(
+                        val_outputs, labels)
+                    # accumulate total loss of validation set
+                    total_val_loss += val_loss.item()
+                    # convert from Log-probabilities to normal probabilities
+                    val_ps = torch.exp(val_outputs)
+                    # Extract class that has highest probability
+                    top_p, top_class = val_ps.topk(1, dim=1)
+                    equals = top_class == labels.view(*top_class.shape)
+                    val_correct += equals.sum().item()
+        # training / validation loss of this epoch
+        train_loss = running_loss / len(dataloader.dataset)
+        valid_loss = total_val_loss / len(validloader.dataset)
+        print("Epoch: {}/{}.. ".format(e + 1, epochs),
+              "Train Loss: {:.6f}.. ".format(train_loss),
+              "Valid Loss: {:.6f}.. ".format(valid_loss),
+              "Valid Accuracy: {:.6f}..".format(
+            val_correct / len(validloader.dataset)),
+            "Duration: {:.1f}s ".format(time.time() - start_epoch)
         )
     print("Done training")
 
@@ -173,8 +235,9 @@ def get_arch_input_size(arch):
     return input_size
 
 
-def save_checkpoint(save_dir, classifier_checkpoint,
+def save_checkpoint(save_dir, myNNmodule,
                     arch, epochs, hidden_units):
+    classifier_checkpoint = myNNmodule.save_checkpoint_type1()
     classifier_checkpoint['input_size'] = get_arch_input_size(arch)
     classifier_checkpoint['output_size'] = 102
     classifier_checkpoint['arch'] = arch
@@ -211,19 +274,33 @@ if __name__ == '__main__':
     print(len(test_dataloader.dataset))
     # Load model
     model, model_out_features = load_pretrained_NN(dict_args['arch'])
+    if model is None:
+        print('Model not loaded')
+        exit()
     hidden_units = dict_args['hidden_units']
     myModule = myNNmodule()
     myModule.apply_classifier_type1(model_out_features, hidden_units)
-    assign_classifier_to_model(myModule.classifier, model, dict_args['arch'])
+    assigned = assign_classifier_to_model(
+        myModule.classifier, model, dict_args['arch'])
+    if assigned is False:
+        print('Unsupported model')
+        exit()
     # train the classifier
     model_classifier = get_model_classifier(model, dict_args['arch'])
-    train_classifier(
-        model, model_classifier,
-        dict_args['epochs'], dict_args['learning_rate'],
-        train_dataloader, valid_dataloader)
+    if model_classifier is None:
+        print('Unsupported model')
+        exit()
+    if dict_args['gpu'] is True:
+        train_classifier_gpu(
+            model, model_classifier,
+            dict_args['epochs'], dict_args['learning_rate'],
+            train_dataloader, valid_dataloader)
+    else:
+        train_classifier_cpu(
+            model, model_classifier,
+            dict_args['epochs'], dict_args['learning_rate'],
+            train_dataloader, valid_dataloader)
     # save the model
-    classifier_checkpoint = myModule.save_checkpoint_type1()
-    save_checkpoint(dict_args['save_dir'], classifier_checkpoint,
+    save_checkpoint(dict_args['save_dir'], myModule,
                     dict_args['arch'], dict_args['epochs'],
                     dict_args['hidden_units'])
-    print("Hello World!")
