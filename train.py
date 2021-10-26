@@ -164,7 +164,7 @@ def train_classifier_gpu(model, model_classifier,
         print("Epoch: {}/{}.. ".format(e + 1, epochs),
               "Train Loss: {:.6f}.. ".format(train_loss),
               "Valid Loss: {:.6f}.. ".format(valid_loss),
-              "Valid Accuracy: {:.6f}..".format(
+              "Valid Accuracy: {:.6f}.. ".format(
             val_correct / len(validloader.dataset)),
             "Duration: {:.1f}s ".format(time.time() - start_epoch)
         )
